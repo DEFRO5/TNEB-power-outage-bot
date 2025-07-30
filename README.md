@@ -28,25 +28,19 @@ A Python script to automatically scrape the TNEB website for scheduled power out
     ```
 
 2.  **Install dependencies:**
-    Create a `requirements.txt` file with the content below and run `pip install -r requirements.txt`.
-    ```
-    requests
-    beautifulsoup4
-    Pillow
-    pytesseract
-    schedule
-    python-dotenv
-    ```
+    Run `pip install -r requirements.txt`.
 
 3.  **Create a `.env` file:**
     Create a `.env` file and populate it with your configuration. Use the table below to find your `APPCAT_CODE`.
     ```env
     TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
     TELEGRAM_CHAT_ID="YOUR_TELEGRAM_CHAT_ID"
-    APPCAT_CODE="463" # Example: Madurai-Metro
-    SCHEDULE_TIME="17:10"
+    APPCAT_CODE="0463,0401" # Example: Madurai-Metro, Chennai-south 1
     ```
-
+4.  **Run with GitHub Actions:**
+    - Add your secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `APPCAT_CODE`) in your repository's GitHub settings under **Settings > Secrets and variables > Actions > Repository secrets**.
+    - The script will run automatically at the scheduled time or when triggered manually.
+    
 ## Available Circle Codes (`APPCAT_CODE`)
 
 | Code | Circle Name       |
@@ -101,4 +95,4 @@ A Python script to automatically scrape the TNEB website for scheduled power out
 
 Run the script from your terminal. It will schedule the job and run automatically at the specified time.
 ```bash
-python your_script_name.py
+python power-alert.py

@@ -17,12 +17,15 @@ class TNEBOutageCrawler:
     def __init__(self):
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        self.appcat_code = os.getenv('APPCAT_CODE')
+        self.appcat_code = self.appcat_codes = [code.strip() for code in os.getenv('APPCAT_CODE', '').split(',') if code.strip()]
         self.base_url = 'https://www.tnebltd.gov.in/outages/viewshutdown.xhtml'
 
         if not self.bot_token or not self.chat_id:
             raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
         
+        if not self.appcat_codes:
+            raise ValueError("APPCAT_CODE must be set")
+               
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -66,12 +69,12 @@ class TNEBOutageCrawler:
             logger.error(f"CAPTCHA solving failed: {e}")
             raise
     
-    def submit_form(self, viewstate, appcat, captcha_text):
+    def submit_form(self, viewstate, appcat, captcha_text, appcat_code):
         try:
             payload = {
                 f'{appcat}': f'{appcat}',
                 f'{appcat}:appcat_focus': '',
-                f'{appcat}:appcat_input': self.appcat_code,
+                f'{appcat}:appcat_input': appcat_code,
                 f'{appcat}:cap': captcha_text,
                 f'{appcat}:submit3': '',
                 'javax.faces.ViewState': viewstate
@@ -163,25 +166,48 @@ class TNEBOutageCrawler:
             logger.error(f"Telegram send failed: {e}")
             raise
 
+    def get_circle_name(self, appcat_code):
+        try:
+            response = self.session.get(self.base_url, timeout=30)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            select_element = soup.find("select", {"name": lambda x: x and x.endswith(":appcat_input")})
+            if select_element:
+                option = select_element.find("option", {"value": appcat_code})
+                if option:
+                    circle_name = option.get_text(strip=True)
+                    logger.info(f"Found circle name: {circle_name} for code: {appcat_code}")
+                    return circle_name
+            
+            logger.warning(f"Circle name not found for code: {appcat_code}")
+            return f"Unknown ({appcat_code})"
+            
+        except Exception as e:
+            logger.error(f"Failed to get circle name for {appcat_code}: {e}")
+            return f"Unknown ({appcat_code})"
+     
     def run(self, max_captcha_retries=5):
         try:
             logger.info("Starting TNEB outage crawler")
             viewstate, appcat = self.get_viewstate()
-            for attempt in range(max_captcha_retries):
-              try:
-                captcha_text = self.solve_captcha()
-                html = self.submit_form(viewstate, appcat, captcha_text)
-                outages = self.parse_outages(html)
-                message = self.format_message(outages)
-                self.send_telegram(message)
-                
-                logger.info("Crawler completed successfully")
-                return True
-              except Exception as captcha_e:
-                logger.warning(f"Captcha attempt {attempt+1} failed: {captcha_e}")
-                if attempt == max_captcha_retries - 1:
-                    raise
-                time.sleep(2)
+            for appcat_code in self.appcat_codes:
+              for attempt in range(max_captcha_retries):
+                try:
+                    captcha_text = self.solve_captcha()
+                    html = self.submit_form(viewstate, appcat, captcha_text, appcat_code)
+                    outages = self.parse_outages(html)
+                    message = self.format_message(outages)
+                    circle_name = self.get_circle_name(appcat_code)
+                    self.send_telegram(f" Circle: {circle_name}\n\n{message}")
+                    logger.info(f"Crawler completed successfully for AppCat: {appcat_code}")
+                    break
+                except Exception as captcha_e:
+                    logger.warning(f"Captcha attempt {attempt+1} failed for AppCat {appcat_code}: {captcha_e}")
+                    if attempt == max_captcha_retries - 1:
+                        raise
+                    time.sleep(2)
+            return True
         except Exception as e:
             error_msg = f"Crawler failed: {e}"
             logger.error(error_msg)
