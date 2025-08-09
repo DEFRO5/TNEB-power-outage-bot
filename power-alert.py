@@ -7,7 +7,7 @@ import pytesseract
 import re
 import logging
 import schedule
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,12 +16,15 @@ logger = logging.getLogger(__name__)
 class TNEBOutageCrawler:
     def __init__(self):
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        self.appcat_code = self.appcat_codes = [code.strip() for code in os.getenv('APPCAT_CODE', '').split(',') if code.strip()]
+        self.chat_ids = [chat_id.strip() for chat_id in os.getenv('TELEGRAM_CHAT_ID', '').split(',') if chat_id.strip()]
+        self.appcat_codes = [code.strip() for code in os.getenv('APPCAT_CODE', '').split(',') if code.strip()]
         self.base_url = 'https://www.tnebltd.gov.in/outages/viewshutdown.xhtml'
 
-        if not self.bot_token or not self.chat_id:
-            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
+        if not self.bot_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN must be set")
+        
+        if not self.chat_ids:
+            raise ValueError("TELEGRAM_CHAT_ID must be set")
         
         if not self.appcat_codes:
             raise ValueError("APPCAT_CODE must be set")
@@ -119,6 +122,7 @@ class TNEBOutageCrawler:
         except Exception as e:
             logger.error(f"Parsing failed: {e}")
             raise
+    
     def format_message(self, outages):
         if not outages:
             return "No power outages currently scheduled."
@@ -139,32 +143,49 @@ class TNEBOutageCrawler:
         return "\n\n".join(messages)
 
     def send_telegram(self, message):
-        try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            
-            # Split message if too long
-            max_length = 4000
-            if len(message) > max_length:
-                parts = [message[i:i+max_length] for i in range(0, len(message), max_length)]
-                for i, part in enumerate(parts):
+        """Send message to all configured chat IDs"""
+        failed_chats = []
+        successful_chats = []
+        
+        for chat_id in self.chat_ids:
+            try:
+                url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+                
+                # Split message if too long
+                max_length = 4000
+                if len(message) > max_length:
+                    parts = [message[i:i+max_length] for i in range(0, len(message), max_length)]
+                    for i, part in enumerate(parts):
+                        response = requests.post(url, data={
+                            "chat_id": chat_id,
+                            "text": f"Part {i+1}/{len(parts)}:\n\n{part}",
+                            "parse_mode": "HTML"
+                        }, timeout=30)
+                        response.raise_for_status()
+                else:
                     response = requests.post(url, data={
-                        "chat_id": self.chat_id,
-                        "text": f"Part {i+1}/{len(parts)}:\n\n{part}",
+                        "chat_id": chat_id,
+                        "text": message,
                         "parse_mode": "HTML"
                     }, timeout=30)
                     response.raise_for_status()
-            else:
-                response = requests.post(url, data={
-                    "chat_id": self.chat_id,
-                    "text": message,
-                    "parse_mode": "HTML"
-                }, timeout=30)
-                response.raise_for_status()
+                
+                successful_chats.append(chat_id)
+                logger.info(f"Message sent to chat ID {chat_id} successfully")
+                
+            except Exception as e:
+                failed_chats.append(chat_id)
+                logger.error(f"Failed to send message to chat ID {chat_id}: {e}")
+        
+        # Log summary
+        if successful_chats:
+            logger.info(f"Message sent successfully to {len(successful_chats)} chat(s): {successful_chats}")
+        if failed_chats:
+            logger.warning(f"Failed to send message to {len(failed_chats)} chat(s): {failed_chats}")
             
-            logger.info("Message sent to Telegram successfully")
-        except Exception as e:
-            logger.error(f"Telegram send failed: {e}")
-            raise
+        # If all chats failed, raise an exception
+        if len(failed_chats) == len(self.chat_ids):
+            raise Exception(f"Failed to send message to all chat IDs: {failed_chats}")
 
     def get_circle_name(self, appcat_code):
         try:
@@ -190,23 +211,26 @@ class TNEBOutageCrawler:
     def run(self, max_captcha_retries=5):
         try:
             logger.info("Starting TNEB outage crawler")
+            logger.info(f"Configured for {len(self.chat_ids)} chat ID(s): {self.chat_ids}")
+            logger.info(f"Configured for {len(self.appcat_codes)} AppCat code(s): {self.appcat_codes}")
+            
             viewstate, appcat = self.get_viewstate()
             for appcat_code in self.appcat_codes:
-              for attempt in range(max_captcha_retries):
-                try:
-                    captcha_text = self.solve_captcha()
-                    html = self.submit_form(viewstate, appcat, captcha_text, appcat_code)
-                    outages = self.parse_outages(html)
-                    message = self.format_message(outages)
-                    circle_name = self.get_circle_name(appcat_code)
-                    self.send_telegram(f" Circle: {circle_name}\n\n{message}")
-                    logger.info(f"Crawler completed successfully for AppCat: {appcat_code}")
-                    break
-                except Exception as captcha_e:
-                    logger.warning(f"Captcha attempt {attempt+1} failed for AppCat {appcat_code}: {captcha_e}")
-                    if attempt == max_captcha_retries - 1:
-                        raise
-                    time.sleep(2)
+                for attempt in range(max_captcha_retries):
+                    try:
+                        captcha_text = self.solve_captcha()
+                        html = self.submit_form(viewstate, appcat, captcha_text, appcat_code)
+                        outages = self.parse_outages(html)
+                        message = self.format_message(outages)
+                        circle_name = self.get_circle_name(appcat_code)
+                        self.send_telegram(f"Circle: {circle_name}\n\n{message}")
+                        logger.info(f"Crawler completed successfully for AppCat: {appcat_code}")
+                        break
+                    except Exception as captcha_e:
+                        logger.warning(f"Captcha attempt {attempt+1} failed for AppCat {appcat_code}: {captcha_e}")
+                        if attempt == max_captcha_retries - 1:
+                            raise
+                        time.sleep(2)
             return True
         except Exception as e:
             error_msg = f"Crawler failed: {e}"
@@ -218,5 +242,5 @@ class TNEBOutageCrawler:
             return False
         
 if __name__ == "__main__":
-    # load_dotenv()
+    load_dotenv()
     TNEBOutageCrawler().run()
